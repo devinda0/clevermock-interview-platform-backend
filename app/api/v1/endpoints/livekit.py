@@ -8,8 +8,6 @@ import logging
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# Agent name must match the one defined in agent.py
-AGENT_NAME = "interview-agent"
 
 @router.get("/token")
 async def get_livekit_token(
@@ -19,8 +17,7 @@ async def get_livekit_token(
     """
     Generate a LiveKit token for a specific room.
     The room name is typically the conversation ID.
-    This token includes agent dispatch configuration to ensure
-    the interview agent joins the room when the participant connects.
+    The agent will automatically join the room when created.
     """
     if not settings.LIVEKIT_API_KEY or not settings.LIVEKIT_API_SECRET:
         raise HTTPException(status_code=500, detail="LiveKit credentials not configured")
@@ -30,18 +27,7 @@ async def get_livekit_token(
         grants = api.VideoGrants(
             room_join=True,
             room=room,
-        )
-        
-        # Create room configuration with agent dispatch
-        # This tells the LiveKit server to dispatch the interview agent
-        # when a participant connects with this token
-        room_config = api.RoomConfiguration(
-            agents=[
-                api.RoomAgentDispatch(
-                    agent_name=AGENT_NAME,
-                    metadata=f'{{"room": "{room}", "user_id": "{str(current_user.id)}"}}',
-                )
-            ]
+            room_create=True,  # Allow participant to create room if it doesn't exist
         )
         
         # Create access token using builder pattern
@@ -50,12 +36,11 @@ async def get_livekit_token(
             .with_identity(str(current_user.id))
             .with_name(current_user.full_name or current_user.email)
             .with_grants(grants)
-            .with_room_config(room_config)
         )
         
         token = access_token.to_jwt()
         
-        logger.info(f"Generated LiveKit token for room {room} with agent dispatch for {AGENT_NAME}")
+        logger.info(f"Generated LiveKit token for room {room}")
         
         return {
             "token": token, 
