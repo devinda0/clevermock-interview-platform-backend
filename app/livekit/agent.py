@@ -146,7 +146,7 @@ async def my_agent(ctx: JobContext):
         #     instructions="Speak in a friendly and engaging tone.",
         # ),
         tts=deepgram.TTS(
-            model="aura-luna-en",
+            model="aura-2-thalia-en",
         ),
         # VAD and turn detection are used to determine when the user is speaking and when the agent should respond
         # See more at https://docs.livekit.io/agents/build/turns
