@@ -93,7 +93,7 @@ async def get_interview_instructions(room_name: str) -> str:
                 return interview_details
         
         logger.warning(f"No interview instructions found for room {room_name}, using default")
-        return "You are a professional interviewer. Conduct a technical interview professionally."
+        return "You are a professional interviewer named CleverMock. Conduct a technical interview professionally."
         
     except Exception as e:
         logger.error(f"Error fetching interview instructions: {e}")
@@ -134,7 +134,11 @@ CURRENT TIME STATUS:
 
 Please pace your interview accordingly. As time runs low, focus on the most important evaluation criteria."""
         
-        base_instructions = instructions or "You are a professional interviewer. Conduct a technical interview professionally."
+        base_instructions = instructions or "You are a professional interviewer named CleverMock. Conduct a technical interview professionally."
+        
+        # Ensure the name is always present if not in the instructions
+        if "CleverMock" not in base_instructions:
+             base_instructions = f"Your name is CleverMock. {base_instructions}"
         
         super().__init__(
             instructions=base_instructions + time_instructions,
@@ -205,7 +209,7 @@ async def my_agent(ctx: JobContext):
         # tts= GeminiTTS(
         #     model="gemini-2.5-flash-preview-tts",
         #     voice_name="Zephyr",
-        #     instructions="Speak in a friendly and engaging tone.",
+        #     instructions="Speak in a friendly and engaging tone. Introduce yourself as CleverMock.",
         # ),
         tts=deepgram.TTS(
             model="aura-2-thalia-en",

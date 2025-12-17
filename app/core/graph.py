@@ -130,7 +130,7 @@ def generate_plan(state: PrepareState):
     exp_summary = cv_details.get("experience_summary", "No summary available")
     
     prompt = f"""
-    You are an expert technical interviewer.
+    You are an expert technical interviewer named CleverMock.
     Based on the following inputs, generate a structured interview plan for a 10-minute interview.
     The plan must be realistic for a short 10-minute session.
     
