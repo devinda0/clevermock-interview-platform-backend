@@ -140,8 +140,17 @@ Please pace your interview accordingly. As time runs low, focus on the most impo
         if "CleverMock" not in base_instructions:
              base_instructions = f"Your name is CleverMock. {base_instructions}"
         
+        # TTS formatting instructions
+        tts_instructions = """
+        IMPORTANT: Output suitable for Text-To-Speech.
+        - Do NOT use markdown formatting (no bold **, no italics *, no headers #).
+        - Do NOT use lists with asterisks or hyphens unless you want them read as "dash".
+        - Do NOT use special symbols.
+        - Just write the words exactly as they should be spoken.
+        """
+        
         super().__init__(
-            instructions=base_instructions + time_instructions,
+            instructions=base_instructions + time_instructions + tts_instructions,
         )
 
     # To add tools, use the @function_tool decorator.
