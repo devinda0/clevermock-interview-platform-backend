@@ -2,6 +2,7 @@ import logging
 import asyncio
 import os
 from uuid import UUID
+from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 from livekit import rtc
@@ -33,6 +34,11 @@ load_dotenv(".env")
 MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
 DATABASE_NAME = os.getenv("DATABASE_NAME", "interview_assistant")
 
+# Interview time constants (in seconds)
+MAIN_INTERVIEW_DURATION = 600  # 10 minutes for main interview
+SUMMARY_PHASE_DURATION = 300   # 5 minutes for summary (10-15 min mark)
+TOTAL_INTERVIEW_DURATION = MAIN_INTERVIEW_DURATION + SUMMARY_PHASE_DURATION  # 15 minutes total
+
 # MongoDB client (lazy initialization)
 _mongo_client = None
 _db = None
@@ -45,6 +51,25 @@ def get_db():
         _mongo_client = AsyncIOMotorClient(MONGODB_URL, uuidRepresentation="standard")
         _db = _mongo_client[DATABASE_NAME]
     return _db
+
+
+def get_elapsed_time_info(start_time: datetime) -> dict:
+    """Calculate elapsed time and return time-related information."""
+    now = datetime.now(timezone.utc)
+    elapsed_seconds = (now - start_time).total_seconds()
+    elapsed_minutes = int(elapsed_seconds // 60)
+    elapsed_secs = int(elapsed_seconds % 60)
+    remaining_main = max(0, MAIN_INTERVIEW_DURATION - elapsed_seconds)
+    remaining_main_minutes = int(remaining_main // 60)
+    
+    return {
+        "elapsed_seconds": elapsed_seconds,
+        "elapsed_minutes": elapsed_minutes,
+        "elapsed_secs": elapsed_secs,
+        "remaining_main_minutes": remaining_main_minutes,
+        "is_summary_phase": elapsed_seconds >= MAIN_INTERVIEW_DURATION,
+        "is_interview_complete": elapsed_seconds >= TOTAL_INTERVIEW_DURATION,
+    }
 
 
 async def get_interview_instructions(room_name: str) -> str:
@@ -75,11 +100,44 @@ async def get_interview_instructions(room_name: str) -> str:
         return "You are a professional interviewer. Conduct a technical interview professionally."
 
 
-class Assistant(Agent):
-    def __init__(self, instructions: str = "") -> None:
-        extra_instructions = " The interview is strictly limited to 10 minutes. Please manage the time effectively to cover key topics and evaluate the candidate within this timeframe."
+class InterviewAssistant(Agent):
+    """Interview assistant agent with time awareness."""
+    
+    def __init__(self, instructions: str = "", start_time: datetime = None, is_summary_phase: bool = False) -> None:
+        self.start_time = start_time or datetime.now(timezone.utc)
+        self.is_summary_phase = is_summary_phase
+        
+        if is_summary_phase:
+            # Summary phase instructions (10-15 minutes)
+            time_instructions = """
+
+IMPORTANT: The main interview phase has ended. You are now in the SUMMARY PHASE (10-15 minutes).
+
+During this summary phase, you must ONLY:
+1. Summarize the candidate's STRONG POINTS based on the interview
+2. Identify the candidate's WEAK POINTS or areas that need improvement
+3. Provide constructive feedback on HOW THE CANDIDATE CAN IMPROVE themselves
+
+Do NOT ask any new interview questions. Focus entirely on providing valuable feedback to help the candidate grow professionally.
+Be constructive, specific, and encouraging while being honest about areas for improvement.
+
+Start by thanking the candidate for their time and then provide the summary."""
+        else:
+            # Main interview phase instructions (0-10 minutes)
+            time_info = get_elapsed_time_info(self.start_time)
+            time_instructions = f"""
+
+CURRENT TIME STATUS:
+- Interview elapsed time: {time_info['elapsed_minutes']} minutes and {time_info['elapsed_secs']} seconds
+- Time remaining for main interview: approximately {time_info['remaining_main_minutes']} minutes
+- The main interview phase is strictly limited to 10 minutes. Manage your questions effectively.
+
+Please pace your interview accordingly. As time runs low, focus on the most important evaluation criteria."""
+        
+        base_instructions = instructions or "You are a professional interviewer. Conduct a technical interview professionally."
+        
         super().__init__(
-            instructions=(instructions or "You are a professional interviewer. Conduct a technical interview professionally.") + extra_instructions,
+            instructions=base_instructions + time_instructions,
         )
 
     # To add tools, use the @function_tool decorator.
@@ -117,6 +175,10 @@ async def my_agent(ctx: JobContext):
     ctx.log_context_fields = {
         "room": ctx.room.name,
     }
+    
+    # Record interview start time
+    interview_start_time = datetime.now(timezone.utc)
+    logger.info(f"Interview starting at {interview_start_time.isoformat()}")
 
     # Set up a voice AI pipeline using OpenAI, Cartesia, AssemblyAI, and the LiveKit turn detector
     session = AgentSession(
@@ -183,9 +245,13 @@ async def my_agent(ctx: JobContext):
     logger.info(f"Interview instructions: {interview_instructions}")
     logger.info(f"Starting interview with instructions for room: {ctx.room.name}")
 
-    # Start the session, which initializes the voice pipeline and warms up the models
+    # Start the session with main interview phase agent
     await session.start(
-        agent=Assistant(instructions=interview_instructions),
+        agent=InterviewAssistant(
+            instructions=interview_instructions,
+            start_time=interview_start_time,
+            is_summary_phase=False
+        ),
         room=ctx.room,
         room_options=room_io.RoomOptions(
             audio_input=room_io.AudioInputOptions(
@@ -199,12 +265,39 @@ async def my_agent(ctx: JobContext):
     # Agent initiates the conversation
     await session.generate_reply(instructions="Start the interview.")
 
-    # Limit the interview to 10 minutes (600 seconds)
-    INTERVIEW_DURATION_SECONDS = 600
+    # Main interview phase (10 minutes)
     try:
-        await asyncio.sleep(INTERVIEW_DURATION_SECONDS)
-        logger.info(f"Interview time limit of {INTERVIEW_DURATION_SECONDS}s reached. Disconnecting.")
+        await asyncio.sleep(MAIN_INTERVIEW_DURATION)
+        logger.info(f"Main interview phase complete after {MAIN_INTERVIEW_DURATION}s. Transitioning to summary phase.")
+        
+        # Transition to summary phase
+        summary_agent = InterviewAssistant(
+            instructions=interview_instructions,
+            start_time=interview_start_time,
+            is_summary_phase=True
+        )
+        
+        # Update the session with summary phase agent
+        session.update_agent(summary_agent)
+        
+        # Prompt the agent to start the summary
+        await session.generate_reply(
+            instructions="The main interview phase has ended. Now provide a comprehensive summary of the candidate's performance, including their strong points, weak points, and specific suggestions for how they can improve."
+        )
+        
+        # Summary phase (5 more minutes, total 15 minutes)
+        await asyncio.sleep(SUMMARY_PHASE_DURATION)
+        logger.info(f"Interview complete after {TOTAL_INTERVIEW_DURATION}s total. Disconnecting.")
+        
+        # Thank the candidate and disconnect
+        await session.generate_reply(
+            instructions="Wrap up the interview by thanking the candidate and wishing them well. Let them know the interview session is now complete."
+        )
+        
+        # Give time for the final message to be spoken
+        await asyncio.sleep(10)
         await ctx.room.disconnect()
+        
     except asyncio.CancelledError:
         logger.info("Interview timer cancelled (likely due to early disconnection)")
 
