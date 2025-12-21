@@ -15,6 +15,7 @@ from livekit.agents import (
     cli,
     inference,
     room_io,
+    llm,
 )
 from livekit.plugins import noise_cancellation, silero, openai
 
@@ -37,7 +38,11 @@ DATABASE_NAME = os.getenv("DATABASE_NAME", "interview_assistant")
 # Interview time constants (in seconds)
 MAIN_INTERVIEW_DURATION = 600  # 10 minutes for main interview
 SUMMARY_PHASE_DURATION = 300   # 5 minutes for summary (10-15 min mark)
+MAIN_INTERVIEW_DURATION = 600  # 10 minutes for main interview
+SUMMARY_PHASE_DURATION = 300   # 5 minutes for summary (10-15 min mark)
 TOTAL_INTERVIEW_DURATION = MAIN_INTERVIEW_DURATION + SUMMARY_PHASE_DURATION  # 15 minutes total
+TRANSCRIPT_SAVE_INTERVAL = 30  # Save transcript every 30 seconds
+
 
 # MongoDB client (lazy initialization)
 _mongo_client = None
@@ -98,6 +103,53 @@ async def get_interview_instructions(room_name: str) -> str:
     except Exception as e:
         logger.error(f"Error fetching interview instructions: {e}")
         return "You are a professional interviewer. Conduct a technical interview professionally."
+
+
+async def save_transcript(room_name: str, chat_ctx: llm.ChatContext):
+    """Save the interview transcript to MongoDB."""
+    try:
+        db = get_db()
+        
+        try:
+             conversation_id = UUID(room_name)
+        except ValueError:
+             logger.warning(f"Invalid UUID for room name (cannot save transcript): {room_name}")
+             return
+
+        # Convert ChatMessage objects to a serializable format
+        messages = []
+        for msg in chat_ctx.messages:
+            messages.append({
+                "role": msg.role,  # system, user, assistant
+                "content": msg.content,
+                "timestamp": datetime.now(timezone.utc) # Approximating timestamp as it's not on the msg object usually
+            })
+
+        logger.info(f"Saving {len(messages)} messages for conversation {conversation_id}")
+
+        await db["conversations"].update_one(
+            {"_id": conversation_id},
+            {"$set": {"transcript": messages, "updated_at": datetime.now(timezone.utc)}}
+        )
+        logger.info(f"Transcript saved for conversation {conversation_id}")
+
+    except Exception as e:
+        logger.error(f"Error saving transcript: {e}")
+
+
+async def periodic_transcript_saver(room_name: str, chat_ctx: llm.ChatContext):
+    """Periodically save the transcript to MongoDB."""
+    logger.info(f"Starting periodic transcript saver for room {room_name}")
+    try:
+        while True:
+            await asyncio.sleep(TRANSCRIPT_SAVE_INTERVAL)
+            await save_transcript(room_name, chat_ctx)
+    except asyncio.CancelledError:
+        logger.info(f"Periodic transcript saver cancelled for room {room_name}")
+    except Exception as e:
+        logger.error(f"Error in periodic transcript saver: {e}")
+
+
 
 
 class InterviewAssistant(Agent):
@@ -258,6 +310,13 @@ async def my_agent(ctx: JobContext):
     logger.info(f"Interview instructions: {interview_instructions}")
     logger.info(f"Starting interview with instructions for room: {ctx.room.name}")
 
+    logger.info(f"Starting interview with instructions for room: {ctx.room.name}")
+
+    # Start the periodic transcript saver
+    transcript_saver_task = asyncio.create_task(
+        periodic_transcript_saver(ctx.room.name, session.chat_ctx)
+    )
+
     # Start the session with main interview phase agent
     await session.start(
         agent=InterviewAssistant(
@@ -307,12 +366,29 @@ async def my_agent(ctx: JobContext):
             instructions="Wrap up the interview by thanking the candidate and wishing them well. Let them know the interview session is now complete."
         )
         
+        # Save the transcript
+        await save_transcript(ctx.room.name, session.chat_ctx)
+
+        
         # Give time for the final message to be spoken
         await asyncio.sleep(10)
         await ctx.room.disconnect()
         
+        
     except asyncio.CancelledError:
         logger.info("Interview timer cancelled (likely due to early disconnection)")
+    finally:
+         # Ensure transcript saver is cancelled
+        if transcript_saver_task:
+            transcript_saver_task.cancel()
+            try:
+                await transcript_saver_task
+            except asyncio.CancelledError:
+                pass
+        
+        # Final save of the transcript
+        await save_transcript(ctx.room.name, session.chat_ctx)
+
 
 
 if __name__ == "__main__":
