@@ -16,6 +16,7 @@ class Conversation(Document):
     title: Optional[str] = None
     participants: List[str] = []
     messages: List[Message] = []
+    transcript: List[dict] = []
     metadata: dict = {}
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
