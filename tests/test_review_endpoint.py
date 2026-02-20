@@ -120,5 +120,65 @@ class TestReviewEndpoint(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertIn("already exists", response.json()["detail"])
 
+    @patch("app.api.v1.endpoints.review.Review")
+    def test_get_review_success(self, mock_review_cls):
+        conversation_id = uuid4()
+        
+        # Mock Review
+        mock_review = MagicMock()
+        mock_review.id = uuid4()
+        mock_review.conversation_id = conversation_id
+        mock_review.user_id = str(self.user_id)
+        mock_review.overall_rating = 5
+        mock_review.ai_quality_rating = 4
+        mock_review.difficulty_rating = 3
+        mock_review.feedback_text = "Great!"
+        from datetime import datetime
+        mock_review.created_at = datetime.utcnow()
+
+        # Mock find_one to return the review
+        mock_find_one_future = asyncio.Future()
+        mock_find_one_future.set_result(mock_review)
+        mock_review_cls.find_one.return_value = mock_find_one_future
+
+        response = self.client.get(f"/api/v1/review/{conversation_id}")
+        
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["overall_rating"], 5)
+        self.assertEqual(data["conversation_id"], str(conversation_id))
+
+    @patch("app.api.v1.endpoints.review.Review")
+    def test_get_review_not_found(self, mock_review_cls):
+        conversation_id = uuid4()
+        
+        # Mock find_one to return None
+        mock_find_one_future = asyncio.Future()
+        mock_find_one_future.set_result(None)
+        mock_review_cls.find_one.return_value = mock_find_one_future
+
+        response = self.client.get(f"/api/v1/review/{conversation_id}")
+        
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("not found", response.json()["detail"].lower())
+
+    @patch("app.api.v1.endpoints.review.Review")
+    def test_get_review_forbidden(self, mock_review_cls):
+        conversation_id = uuid4()
+        
+        # Mock Review belonging to another user
+        mock_review = MagicMock()
+        mock_review.user_id = "other-user-id"
+        
+        # Mock find_one to return the review
+        mock_find_one_future = asyncio.Future()
+        mock_find_one_future.set_result(mock_review)
+        mock_review_cls.find_one.return_value = mock_find_one_future
+
+        response = self.client.get(f"/api/v1/review/{conversation_id}")
+        
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("permission", response.json()["detail"].lower())
+
 if __name__ == "__main__":
     unittest.main()
