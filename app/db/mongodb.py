@@ -11,6 +11,7 @@ async def init_db():
             "app.models.user.User",
             "app.models.token_blacklist.TokenBlacklist",
             "app.models.password_reset.PasswordReset",
+            "app.models.review.Review",
         ]
     )
 
