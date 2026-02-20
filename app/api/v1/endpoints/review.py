@@ -60,3 +60,28 @@ async def create_review(
     await review.insert()
     
     return review
+
+@router.get("/{conversation_id}", response_model=ReviewResponse)
+async def get_review(
+    conversation_id: UUID,
+    current_user: User = Depends(get_current_user)
+) -> Any:
+    """
+    Retrieve a review for a specific conversation.
+    """
+    review = await Review.find_one(Review.conversation_id == conversation_id)
+    
+    if not review:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Review not found"
+        )
+    
+    # Check if the current user is the owner of the review
+    if str(review.user_id) != str(current_user.id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to view this review"
+        )
+        
+    return review
