@@ -13,8 +13,10 @@ from livekit.agents import (
     cli,
     room_io,
     llm,
-    pipeline,
 )
+from livekit.agents.pipeline import VoicePipelineAgent
+from livekit.agents import pipeline
+
 from livekit.plugins import noise_cancellation, silero, openai
 
 from livekit.plugins.google.beta import GeminiTTS
