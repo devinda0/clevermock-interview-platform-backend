@@ -1,4 +1,4 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import field_validator
 from typing import List, Union
 import json
@@ -6,14 +6,18 @@ import json
 class Settings(BaseSettings):
     PROJECT_NAME: str = "Interview Assistant Backend"
     API_V1_STR: str = "/api/v1"
-    BACKEND_CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:8000"]
+    BACKEND_CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:8000"]
     
     @field_validator("BACKEND_CORS_ORIGINS", mode="before")
     @classmethod
-    def assemble_cors_origins(cls, v: Union[str, List[str]]) -> List[str]:
+    def assemble_cors_origins(cls, v: Union[str, list[str]]) -> list[str]:
         if isinstance(v, str):
-            if v.startswith("["):
-                return json.loads(v)
+            try:
+                parsed = json.loads(v)
+                if isinstance(parsed, list):
+                    return parsed
+            except (json.JSONDecodeError, ValueError):
+                pass
             return [i.strip() for i in v.split(",")]
         return v
     
@@ -40,10 +44,10 @@ class Settings(BaseSettings):
     # Logging
     LOG_LEVEL: str = "INFO"
 
-    model_config = {
-        "case_sensitive": True,
-        "env_file": ".env",
-        "extra": "ignore"
-    }
+    model_config = SettingsConfigDict(
+        case_sensitive=True,
+        env_file=".env",
+        extra="ignore",
+    )
 
 settings = Settings()
