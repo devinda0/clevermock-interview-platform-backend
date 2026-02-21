@@ -7,15 +7,13 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 from livekit import rtc
 from livekit.agents import (
-    Agent,
     AgentServer,
-    AgentSession,
     JobContext,
     JobProcess,
     cli,
-    inference,
     room_io,
     llm,
+    pipeline,
 )
 from livekit.plugins import noise_cancellation, silero, openai
 
@@ -36,8 +34,6 @@ MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
 DATABASE_NAME = os.getenv("DATABASE_NAME", "interview_assistant")
 
 # Interview time constants (in seconds)
-MAIN_INTERVIEW_DURATION = 600  # 10 minutes for main interview
-SUMMARY_PHASE_DURATION = 300   # 5 minutes for summary (10-15 min mark)
 MAIN_INTERVIEW_DURATION = 600  # 10 minutes for main interview
 SUMMARY_PHASE_DURATION = 300   # 5 minutes for summary (10-15 min mark)
 TOTAL_INTERVIEW_DURATION = MAIN_INTERVIEW_DURATION + SUMMARY_PHASE_DURATION  # 15 minutes total
@@ -120,9 +116,9 @@ async def save_transcript(room_name: str, chat_ctx: llm.ChatContext):
         messages = []
         for msg in chat_ctx.messages:
             messages.append({
-                "role": msg.role,  # system, user, assistant
+                "role": str(msg.role),  # system, user, assistant
                 "content": msg.content,
-                "timestamp": datetime.now(timezone.utc) # Approximating timestamp as it's not on the msg object usually
+                "timestamp": datetime.now(timezone.utc)
             })
 
         logger.info(f"Saving {len(messages)} messages for conversation {conversation_id}")
@@ -150,19 +146,14 @@ async def periodic_transcript_saver(room_name: str, chat_ctx: llm.ChatContext):
         logger.error(f"Error in periodic transcript saver: {e}")
 
 
-
-
-class InterviewAssistant(Agent):
-    """Interview assistant agent with time awareness."""
-    
-    def __init__(self, instructions: str = "", start_time: datetime = None, is_summary_phase: bool = False) -> None:
-        self.start_time = start_time or datetime.now(timezone.utc)
-        self.is_summary_phase = is_summary_phase
+class InterviewAgent:
+    """Helper to manage interview instructions."""
+    @staticmethod
+    def get_instructions(instructions: str = "", start_time: datetime = None, is_summary_phase: bool = False) -> str:
+        start_time = start_time or datetime.now(timezone.utc)
         
         if is_summary_phase:
-            # Summary phase instructions (10-15 minutes)
             time_instructions = """
-
 IMPORTANT: The main interview phase has ended. You are now in the SUMMARY PHASE (10-15 minutes).
 
 During this summary phase, you must ONLY:
@@ -175,10 +166,8 @@ Be constructive, specific, and encouraging while being honest about areas for im
 
 Start by thanking the candidate for their time and then provide the summary."""
         else:
-            # Main interview phase instructions (0-10 minutes)
-            time_info = get_elapsed_time_info(self.start_time)
+            time_info = get_elapsed_time_info(start_time)
             time_instructions = f"""
-
 CURRENT TIME STATUS:
 - Interview elapsed time: {time_info['elapsed_minutes']} minutes and {time_info['elapsed_secs']} seconds
 - Time remaining for main interview: approximately {time_info['remaining_main_minutes']} minutes
@@ -187,13 +176,10 @@ CURRENT TIME STATUS:
 Please pace your interview accordingly. As time runs low, focus on the most important evaluation criteria."""
         
         base_instructions = instructions or "You are a professional interviewer named CleverMock. Conduct a technical interview professionally."
-        
-        # Ensure the name is always present if not in the instructions
         if "CleverMock" not in base_instructions:
              base_instructions = f"Your name is CleverMock. {base_instructions}"
         
-        # TTS formatting instructions
-        tts_instructions = """
+        tts_formatting = """
         IMPORTANT: Output suitable for Text-To-Speech.
         - Do NOT use markdown formatting (no bold **, no italics *, no headers #).
         - Do NOT use lists with asterisks or hyphens unless you want them read as "dash".
@@ -201,26 +187,7 @@ Please pace your interview accordingly. As time runs low, focus on the most impo
         - Just write the words exactly as they should be spoken.
         """
         
-        super().__init__(
-            instructions=base_instructions + time_instructions + tts_instructions,
-        )
-
-    # To add tools, use the @function_tool decorator.
-    # Here's an example that adds a simple weather tool.
-    # You also have to add `from livekit.agents import function_tool, RunContext` to the top of this file
-    # @function_tool
-    # async def lookup_weather(self, context: RunContext, location: str):
-    #     """Use this tool to look up current weather information in the given location.
-    #
-    #     If the location is not supported by the weather service, the tool will indicate this. You must tell the user the location's weather is unavailable.
-    #
-    #     Args:
-    #         location: The location to look up weather information for (e.g. city name)
-    #     """
-    #
-    #     logger.info(f"Looking up weather for {location}")
-    #
-    #     return "sunny with a temperature of 70 degrees."
+        return base_instructions + time_instructions + tts_formatting
 
 
 server = AgentServer()
@@ -236,7 +203,6 @@ server.setup_fnc = prewarm
 @server.rtc_session()
 async def my_agent(ctx: JobContext):
     # Logging setup
-    # Add any other context you want in all log entries here
     ctx.log_context_fields = {
         "room": ctx.room.name,
     }
@@ -245,140 +211,73 @@ async def my_agent(ctx: JobContext):
     interview_start_time = datetime.now(timezone.utc)
     logger.info(f"Interview starting at {interview_start_time.isoformat()}")
 
-    # Set up a voice AI pipeline using OpenAI, Cartesia, AssemblyAI, and the LiveKit turn detector
-    session = AgentSession(
-        # Speech-to-text (STT) is your agent's ears, turning the user's speech into text that the LLM can understand
-        # See all available models at https://docs.livekit.io/agents/models/stt/
-        stt=deepgram.STT(
-            model="nova-3",
-            language="en-US",
-        ),
-        # stt=openai.STT.with_openrouter(
-        #     model="google/gemini-2.0-flash-lite-001"
-        # ),
-        # A Large Language Model (LLM) is your agent's brain, processing user input and generating a response
-        # See all available models at https://docs.livekit.io/agents/models/llm/
-        # llm=openai.LLM.with_openrouter(
-        #     model="amazon/nova-2-lite-v1:free",
-        #     api_key=os.getenv("OPENROUTER_API_KEY"),
-        # ),
-        llm=GoogleLLM(
-            model="gemini-2.5-flash-lite",
-        ),
-        # Text-to-speech (TTS) is your agent's voice, turning the LLM's text into speech that the user can hear
-        # See all available models as well as voice selections at https://docs.livekit.io/agents/models/tts/
-        # tts= GeminiTTS(
-        #     model="gemini-2.5-flash-preview-tts",
-        #     voice_name="Zephyr",
-        #     instructions="Speak in a friendly and engaging tone. Introduce yourself as CleverMock.",
-        # ),
-        tts=deepgram.TTS(
-            model="aura-2-thalia-en",
-        ),
-        # VAD and turn detection are used to determine when the user is speaking and when the agent should respond
-        # See more at https://docs.livekit.io/agents/build/turns
-        # turn_detection=MultilingualModel(),
+    # Fetch interview instructions
+    interview_instructions = await get_interview_instructions(ctx.room.name)
+
+    # Set up a voice AI pipeline
+    agent = pipeline.VoicePipelineAgent(
         vad=ctx.proc.userdata["vad"],
-        # allow the LLM to generate a response while waiting for the end of turn
-        # See more at https://docs.livekit.io/agents/build/audio/#preemptive-generation
+        stt=deepgram.STT(model="nova-3", language="en-US"),
+        llm=GoogleLLM(model="gemini-2.5-flash-lite"),
+        tts=deepgram.TTS(model="aura-2-thalia-en"),
+        chat_ctx=llm.ChatContext().append(
+            role="system",
+            text=InterviewAgent.get_instructions(
+                instructions=interview_instructions,
+                start_time=interview_start_time,
+                is_summary_phase=False
+            )
+        ),
         preemptive_generation=True,
     )
 
-    # To use a realtime model instead of a voice pipeline, use the following session setup instead.
-    # (Note: This is for the OpenAI Realtime API. For other providers, see https://docs.livekit.io/agents/models/realtime/))
-    # 1. Install livekit-agents[openai]
-    # 2. Set OPENAI_API_KEY in .env.local
-    # 3. Add `from livekit.plugins import openai` to the top of this file
-    # 4. Use the following session setup instead of the version above
-    # session = AgentSession(
-    #     llm=openai.realtime.RealtimeModel(voice="marin")
-    # )
-
-    # # Add a virtual avatar to the session, if desired
-    # # For other providers, see https://docs.livekit.io/agents/models/avatar/
-    # avatar = hedra.AvatarSession(
-    #   avatar_id="...",  # See https://docs.livekit.io/agents/models/avatar/plugins/hedra
-    # )
-    # # Start the avatar and wait for it to join
-    # await avatar.start(session, room=ctx.room)
-
-    # First, connect to the room (MUST be done before session.start())
+    # First, connect to the room
     await ctx.connect()
-
-    # Fetch interview instructions from MongoDB using room name as conversation ID
-    interview_instructions = await get_interview_instructions(ctx.room.name)
-    logger.info(f"Interview instructions: {interview_instructions}")
-    logger.info(f"Starting interview with instructions for room: {ctx.room.name}")
-
-    logger.info(f"Starting interview with instructions for room: {ctx.room.name}")
 
     # Start the periodic transcript saver
     transcript_saver_task = asyncio.create_task(
-        periodic_transcript_saver(ctx.room.name, session.chat_ctx)
+        periodic_transcript_saver(ctx.room.name, agent.chat_ctx)
     )
 
-    # Start the session with main interview phase agent
-    await session.start(
-        agent=InterviewAssistant(
-            instructions=interview_instructions,
-            start_time=interview_start_time,
-            is_summary_phase=False
-        ),
-        room=ctx.room,
-        room_options=room_io.RoomOptions(
-            audio_input=room_io.AudioInputOptions(
-                noise_cancellation=lambda params: noise_cancellation.BVCTelephony()
-                if params.participant.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP
-                else noise_cancellation.BVC(),
-            ),
-        ),
-    )
+    # Start the agent
+    agent.start(ctx.room)
 
     # Agent initiates the conversation
-    await session.generate_reply(instructions="Start the interview.")
+    await agent.say("Hello! I am CleverMock, your interviewer for today. Shall we begin?")
 
-    # Main interview phase (10 minutes)
+    # Main interview phase
     try:
         await asyncio.sleep(MAIN_INTERVIEW_DURATION)
-        logger.info(f"Main interview phase complete after {MAIN_INTERVIEW_DURATION}s. Transitioning to summary phase.")
+        logger.info(f"Main interview phase complete. Transitioning to summary phase.")
         
         # Transition to summary phase
-        summary_agent = InterviewAssistant(
-            instructions=interview_instructions,
-            start_time=interview_start_time,
-            is_summary_phase=True
+        agent.chat_ctx.append(
+            role="system",
+            text=InterviewAgent.get_instructions(
+                instructions=interview_instructions,
+                start_time=interview_start_time,
+                is_summary_phase=True
+            )
         )
         
-        # Update the session with summary phase agent
-        session.update_agent(summary_agent)
+        await agent.say("The main interview phase has ended. Now I will provide a comprehensive summary of your performance, including your strong points, weak points, and specific suggestions for how you can improve.")
         
-        # Prompt the agent to start the summary
-        await session.generate_reply(
-            instructions="The main interview phase has ended. Now provide a comprehensive summary of the candidate's performance, including their strong points, weak points, and specific suggestions for how they can improve."
-        )
-        
-        # Summary phase (5 more minutes, total 15 minutes)
+        # Summary phase
         await asyncio.sleep(SUMMARY_PHASE_DURATION)
-        logger.info(f"Interview complete after {TOTAL_INTERVIEW_DURATION}s total. Disconnecting.")
+        logger.info(f"Interview complete. Disconnecting.")
         
-        # Thank the candidate and disconnect
-        await session.generate_reply(
-            instructions="Wrap up the interview by thanking the candidate and wishing them well. Let them know the interview session is now complete."
-        )
+        await agent.say("Thank you for your time today. The interview session is now complete. I wish you the best of luck!")
         
         # Save the transcript
-        await save_transcript(ctx.room.name, session.chat_ctx)
-
+        await save_transcript(ctx.room.name, agent.chat_ctx)
         
         # Give time for the final message to be spoken
-        await asyncio.sleep(10)
+        await asyncio.sleep(5)
         await ctx.room.disconnect()
         
-        
     except asyncio.CancelledError:
-        logger.info("Interview timer cancelled (likely due to early disconnection)")
+        logger.info("Interview timer cancelled")
     finally:
-         # Ensure transcript saver is cancelled
         if transcript_saver_task:
             transcript_saver_task.cancel()
             try:
@@ -387,8 +286,7 @@ async def my_agent(ctx: JobContext):
                 pass
         
         # Final save of the transcript
-        await save_transcript(ctx.room.name, session.chat_ctx)
-
+        await save_transcript(ctx.room.name, agent.chat_ctx)
 
 
 if __name__ == "__main__":
