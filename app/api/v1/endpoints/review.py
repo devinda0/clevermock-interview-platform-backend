@@ -5,9 +5,65 @@ from app.api.deps import get_current_user
 from app.models.user import User
 from app.models.chat import Conversation
 from app.models.review import Review
-from app.schemas.review import ReviewCreate, ReviewResponse
+from app.schemas.review import ReviewCreate, ReviewResponse, ReviewStats
 
 router = APIRouter()
+
+@router.get("/stats", response_model=ReviewStats)
+async def get_review_stats() -> Any:
+    """
+    Get aggregated review statistics.
+    Returns average rating, total number of reviews, and rating distribution.
+    This is a public/admin endpoint that does not require authentication.
+    """
+    pipeline = [
+        {
+            "$facet": {
+                "overview": [
+                    {
+                        "$group": {
+                            "_id": None,
+                            "average_rating": {"$avg": "$overall_rating"},
+                            "total_reviews": {"$sum": 1}
+                        }
+                    }
+                ],
+                "distribution": [
+                    {
+                        "$group": {
+                            "_id": "$overall_rating",
+                            "count": {"$sum": 1}
+                        }
+                    }
+                ]
+            }
+        }
+    ]
+
+    cursor = Review.aggregate(pipeline)
+    results = await cursor.to_list(length=None)
+    
+    if not results or not results[0]["overview"]:
+        return ReviewStats(
+            average_rating=0.0,
+            total_reviews=0,
+            rating_distribution={"5": 0}
+        )
+        
+    overview = results[0]["overview"][0]
+    distribution = results[0]["distribution"]
+    
+    # Format distribution array into dict with default 0s for missing ratings
+    dist_dict = {str(i): 0 for i in range(1, 6)}
+    for item in distribution:
+        # Pydantic dict expects string keys
+        dist_dict[str(item["_id"])] = item["count"]
+
+    return ReviewStats(
+        average_rating=round(overview["average_rating"], 1),
+        total_reviews=overview["total_reviews"],
+        rating_distribution=dist_dict
+    )
 
 @router.post("/{conversation_id}", response_model=ReviewResponse, status_code=status.HTTP_201_CREATED)
 async def create_review(
