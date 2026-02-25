@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 from livekit import rtc
 from livekit.agents import (
+    Agent,
+    AgentSession,
     AgentServer,
     JobContext,
     JobProcess,
@@ -14,12 +16,9 @@ from livekit.agents import (
     room_io,
     llm,
 )
-from livekit.agents.pipeline import VoicePipelineAgent
-from livekit.agents import pipeline
 
-from livekit.plugins import noise_cancellation, silero, openai
+from livekit.plugins import silero
 
-from livekit.plugins.google.beta import GeminiTTS
 from livekit.plugins.google import LLM as GoogleLLM
 from livekit.plugins import deepgram
 
@@ -116,10 +115,13 @@ async def save_transcript(room_name: str, chat_ctx: llm.ChatContext):
 
         # Convert ChatMessage objects to a serializable format
         messages = []
-        for msg in chat_ctx.messages:
+        for item in chat_ctx.items:
+            msg = item if hasattr(item, 'role') else None
+            if msg is None:
+                continue
             messages.append({
                 "role": str(msg.role),  # system, user, assistant
-                "content": msg.content,
+                "content": msg.text_content if hasattr(msg, 'text_content') else str(msg.content),
                 "timestamp": datetime.now(timezone.utc)
             })
 
@@ -216,20 +218,21 @@ async def my_agent(ctx: JobContext):
     # Fetch interview instructions
     interview_instructions = await get_interview_instructions(ctx.room.name)
 
-    # Set up a voice AI pipeline
-    agent = pipeline.VoicePipelineAgent(
+    # Create the Agent with instructions
+    interview_agent = Agent(
+        instructions=InterviewAgent.get_instructions(
+            instructions=interview_instructions,
+            start_time=interview_start_time,
+            is_summary_phase=False
+        ),
+    )
+
+    # Set up the voice session
+    session = AgentSession(
         vad=ctx.proc.userdata["vad"],
         stt=deepgram.STT(model="nova-3", language="en-US"),
         llm=GoogleLLM(model="gemini-2.5-flash-lite"),
         tts=deepgram.TTS(model="aura-2-thalia-en"),
-        chat_ctx=llm.ChatContext().append(
-            role="system",
-            text=InterviewAgent.get_instructions(
-                instructions=interview_instructions,
-                start_time=interview_start_time,
-                is_summary_phase=False
-            )
-        ),
         preemptive_generation=True,
     )
 
@@ -238,14 +241,14 @@ async def my_agent(ctx: JobContext):
 
     # Start the periodic transcript saver
     transcript_saver_task = asyncio.create_task(
-        periodic_transcript_saver(ctx.room.name, agent.chat_ctx)
+        periodic_transcript_saver(ctx.room.name, session.chat_ctx)
     )
 
-    # Start the agent
-    agent.start(ctx.room)
+    # Start the session with the agent
+    await session.start(agent=interview_agent, room=ctx.room)
 
     # Agent initiates the conversation
-    await agent.say("Hello! I am CleverMock, your interviewer for today. Shall we begin?")
+    await session.say("Hello! I am CleverMock, your interviewer for today. Shall we begin?")
 
     # Main interview phase
     try:
@@ -253,25 +256,25 @@ async def my_agent(ctx: JobContext):
         logger.info(f"Main interview phase complete. Transitioning to summary phase.")
         
         # Transition to summary phase
-        agent.chat_ctx.append(
+        session.chat_ctx.add_message(
             role="system",
-            text=InterviewAgent.get_instructions(
+            content=InterviewAgent.get_instructions(
                 instructions=interview_instructions,
                 start_time=interview_start_time,
                 is_summary_phase=True
             )
         )
         
-        await agent.say("The main interview phase has ended. Now I will provide a comprehensive summary of your performance, including your strong points, weak points, and specific suggestions for how you can improve.")
+        await session.say("The main interview phase has ended. Now I will provide a comprehensive summary of your performance, including your strong points, weak points, and specific suggestions for how you can improve.")
         
         # Summary phase
         await asyncio.sleep(SUMMARY_PHASE_DURATION)
         logger.info(f"Interview complete. Disconnecting.")
         
-        await agent.say("Thank you for your time today. The interview session is now complete. I wish you the best of luck!")
+        await session.say("Thank you for your time today. The interview session is now complete. I wish you the best of luck!")
         
         # Save the transcript
-        await save_transcript(ctx.room.name, agent.chat_ctx)
+        await save_transcript(ctx.room.name, session.chat_ctx)
         
         # Give time for the final message to be spoken
         await asyncio.sleep(5)
@@ -288,7 +291,7 @@ async def my_agent(ctx: JobContext):
                 pass
         
         # Final save of the transcript
-        await save_transcript(ctx.room.name, agent.chat_ctx)
+        await save_transcript(ctx.room.name, session.chat_ctx)
 
 
 if __name__ == "__main__":
