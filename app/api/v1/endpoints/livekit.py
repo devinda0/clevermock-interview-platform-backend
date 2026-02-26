@@ -27,10 +27,11 @@ async def get_livekit_token(
         grants = api.VideoGrants(
             room_join=True,
             room=room,
-    room_create=True,
-    room_config=api.RoomConfiguration(
-        agents=[api.RoomAgentDispatch(agent_name="interview-agent")]
-    )
+            room_create=True,
+            room_config=api.RoomConfiguration(
+                agents=[api.RoomAgentDispatch(agent_name="interview-agent")]
+            ),
+        )
         access_token = (
             api.AccessToken(settings.LIVEKIT_API_KEY, settings.LIVEKIT_API_SECRET)
             .with_identity(str(current_user.id))
