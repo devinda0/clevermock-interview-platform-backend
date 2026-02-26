@@ -23,14 +23,11 @@ async def get_livekit_token(
         raise HTTPException(status_code=500, detail="LiveKit credentials not configured")
 
     try:
-        # Create a grant for the token using new SDK pattern
+        # Create a grant for the token
         grants = api.VideoGrants(
             room_join=True,
             room=room,
             room_create=True,
-            room_config=api.RoomConfiguration(
-                agents=[api.RoomAgentDispatch(agent_name="interview-agent")]
-            ),
         )
         access_token = (
             api.AccessToken(settings.LIVEKIT_API_KEY, settings.LIVEKIT_API_SECRET)
@@ -40,6 +37,23 @@ async def get_livekit_token(
         )
         
         token = access_token.to_jwt()
+
+        # Dispatch the interview agent to the room
+        try:
+            room_service = api.RoomServiceClient(
+                settings.LIVEKIT_URL,
+                settings.LIVEKIT_API_KEY,
+                settings.LIVEKIT_API_SECRET,
+            )
+            await room_service.create_dispatch(
+                api.CreateAgentDispatchRequest(
+                    room=room,
+                    agent_name="interview-agent",
+                )
+            )
+            logger.info(f"Dispatched interview-agent to room {room}")
+        except Exception as dispatch_err:
+            logger.warning(f"Agent dispatch failed (agent may auto-join): {dispatch_err}")
         
         logger.info(f"Generated LiveKit token for room {room}")
         
