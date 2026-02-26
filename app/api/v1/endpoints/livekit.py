@@ -3,6 +3,8 @@ from app.api.deps import get_current_user
 from app.models.user import User
 from app.core.config import settings
 from livekit import api
+from livekit.api.agent_dispatch_service import AgentDispatchService
+import aiohttp
 import logging
 
 router = APIRouter()
@@ -40,18 +42,20 @@ async def get_livekit_token(
 
         # Dispatch the interview agent to the room
         try:
-            room_service = api.RoomServiceClient(
-                settings.LIVEKIT_URL,
-                settings.LIVEKIT_API_KEY,
-                settings.LIVEKIT_API_SECRET,
-            )
-            await room_service.create_dispatch(
-                api.CreateAgentDispatchRequest(
-                    room=room,
-                    agent_name="interview-agent",
+            async with aiohttp.ClientSession() as session:
+                dispatch_service = AgentDispatchService(
+                    session,
+                    settings.LIVEKIT_URL.replace("wss://", "https://").replace("ws://", "http://"),
+                    settings.LIVEKIT_API_KEY,
+                    settings.LIVEKIT_API_SECRET,
                 )
-            )
-            logger.info(f"Dispatched interview-agent to room {room}")
+                await dispatch_service.create_dispatch(
+                    api.CreateAgentDispatchRequest(
+                        room=room,
+                        agent_name="interview-agent",
+                    )
+                )
+                logger.info(f"Dispatched interview-agent to room {room}")
         except Exception as dispatch_err:
             logger.warning(f"Agent dispatch failed (agent may auto-join): {dispatch_err}")
         
