@@ -241,7 +241,7 @@ async def my_agent(ctx: JobContext):
 
     # Start the periodic transcript saver
     transcript_saver_task = asyncio.create_task(
-        periodic_transcript_saver(ctx.room.name, session.chat_ctx)
+        periodic_transcript_saver(ctx.room.name, session.history)
     )
 
     # Start the session with the agent
@@ -256,7 +256,7 @@ async def my_agent(ctx: JobContext):
         logger.info(f"Main interview phase complete. Transitioning to summary phase.")
         
         # Transition to summary phase
-        session.chat_ctx.add_message(
+        session.history.add_message(
             role="system",
             content=InterviewAgent.get_instructions(
                 instructions=interview_instructions,
@@ -274,7 +274,7 @@ async def my_agent(ctx: JobContext):
         await session.say("Thank you for your time today. The interview session is now complete. I wish you the best of luck!")
         
         # Save the transcript
-        await save_transcript(ctx.room.name, session.chat_ctx)
+        await save_transcript(ctx.room.name, session.history)
         
         # Give time for the final message to be spoken
         await asyncio.sleep(5)
@@ -291,7 +291,7 @@ async def my_agent(ctx: JobContext):
                 pass
         
         # Final save of the transcript
-        await save_transcript(ctx.room.name, session.chat_ctx)
+        await save_transcript(ctx.room.name, session.history)
 
 
 if __name__ == "__main__":
